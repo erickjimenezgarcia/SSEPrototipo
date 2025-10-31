@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Mapa SSE</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        crossorigin="" />
+  <style>html, body, #map{height:100%;margin:0}</style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const map = L.map('map').setView([-12.0464, -77.0428], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {maxZoom:19, attribution:'&copy; OpenStreetMap'}).addTo(map);
+
+    const markers = new Map();
+    function upsertMarker({ id, lat, lng, label }) {
+      const key = id || `${lat},${lng}`;
+      if (markers.has(key)) {
+        markers.get(key).setLatLng([lat, lng]).setPopupContent(label || key);
+      } else {
+        const m = L.marker([lat, lng]).addTo(map);
+        if (label) m.bindPopup(label);
+        markers.set(key, m);
+      }
+    }
+
+    // IMPORTANTE: ruta relativa → mismo origin que FastAPI
+    const es = new EventSource("/events");
+    es.addEventListener("connected", () => console.log("[SSE] conectado"));
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (typeof data.lat === "number" && typeof data.lng === "number") {
+          upsertMarker(data);
+        } else {
+          console.log("[SSE]", data);
+        }
+      } catch {
+        console.warn("[SSE] no JSON:", e.data);
+      }
+    };
+  </script>
+</body>
+</html>
