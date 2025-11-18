@@ -2,48 +2,311 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Mapa SSE</title>
+  <title>Visor</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet"
-        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        crossorigin="" />
-  <style>html, body, #map{height:100%;margin:0}</style>
+  <link rel="icon" href="/assets/img/ui/sunass_logo.png" type="image/png" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin />
+  <style>
+    html, body, #map { height: 100%; margin: 0 }
+    .toolbar {
+      position: absolute; z-index: 1000; top: 8px; left: 8px;
+      background: #fff; padding: 8px 10px; border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15); font: 12px system-ui, sans-serif;
+      display: flex; gap: 6px; align-items: center;
+    }
+    .toolbar input { padding: 4px 6px }
+    .toolbar button { padding: 6px 10px; border-radius: 8px; border: 0; cursor: pointer }
+    .zoom-hint { background:#fff;padding:6px 8px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.2);font:12px/1.2 sans-serif; }
+    .corner {
+      position: absolute;
+      z-index: 1000;
+      bottom: 12px;
+      pointer-events: none; 
+      opacity: .95;
+    }
+
+    .corner img {
+      display: block;
+      height: auto;
+      filter: drop-shadow(0 2px 6px rgba(0,0,0,.35));
+    }
+
+    .corner-left img {
+      width: 120px;       
+    }
+
+    .corner-right img {
+      width: 80px; 
+    }
+
+    .corner-left  { left: 12px; }
+    .corner-right { right: 12px; }
+
+    @media (max-width: 600px) {
+      .corner-left img {
+      width: 60px;       
+      }
+
+      .corner-right img {
+        width: 40px; 
+      }
+    }
+  </style>
 </head>
 <body>
   <div id="map"></div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script>
-    const map = L.map('map').setView([-12.0464, -77.0428], 12);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      {maxZoom:19, attribution:'&copy; OpenStreetMap'}).addTo(map);
 
-    const markers = new Map();
-    function upsertMarker({ id, lat, lng, label }) {
-      const key = id || `${lat},${lng}`;
-      if (markers.has(key)) {
-        markers.get(key).setLatLng([lat, lng]).setPopupContent(label || key);
-      } else {
-        const m = L.marker([lat, lng]).addTo(map);
-        if (label) m.bindPopup(label);
-        markers.set(key, m);
+  <div class="toolbar">
+    <label>Desde: <input id="d-start" type="date"></label>
+    <label>Hasta: <input id="d-end" type="date"></label>
+    <button id="apply">Aplicar</button>
+
+    <label style="margin-left:8px;">
+      <input type="checkbox" id="toggle-area" checked>
+      Área de drenaje
+    </label>
+
+    <span id="status"></span>
+  </div>
+
+  <div class="corner corner-left">
+    <img src="/assets/img/ui/camiyaku.png" alt="Marca izquierda">
+  </div>
+  <div class="corner corner-right">
+    <img src="/assets/img/ui/sunass_logo2.png" alt="Marca derecha">
+  </div>
+
+  <div style="
+    position: fixed;
+    bottom: 4px;
+    left: 8px;
+    font-size: 10px;
+    color: #555;
+    z-index: 1000;
+    background: rgba(255,255,255,0.8);
+    padding: 2px 6px;
+    border-radius: 4px;
+  ">
+    © OpenStreetMap contributors
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin></script>
+  <script>
+  // === Config ===
+  const MIN_ZOOM = 8;
+  const POINT_RADIUS = 3;
+  const MAX_POINTS = 20000;
+
+  const faucetIcon = L.icon({
+    iconUrl: '/assets/img/icons/faucet.svg', // <-- tu ruta
+    iconSize: [18, 18],        // tamaño del ícono (ajústalo)
+    iconAnchor: [9, 9],        // centro del ícono
+    popupAnchor: [0, -10],     // si luego quieres popups
+    className: 'faucet-icon',  // para CSS opcional
+  });
+
+  // Util: fechas (America/Lima, sin librerías)
+  const tzOffsetMinutes = 5 * 60; // Lima -05:00 (fijo)
+  const todayLocal = () => {
+    const now = new Date();
+    // Ajustamos a Lima restando el offset del sistema y aplicando -05:00
+    const utc = now.getTime() + now.getTimezoneOffset()*60000;
+    return new Date(utc - tzOffsetMinutes*60000);
+  };
+  const yyyymmdd = (d) => d.toISOString().slice(0,10);
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const endOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,59,59,999);
+
+  // Mapa + renderer
+  const map = L.map('map',{attributionControl: false}).setView([-9.2, -75.0], 6);
+  map.zoomControl.setPosition('topright');
+  L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      subdomains: 'abcd',
+    }
+  ).addTo(map);
+  const canvasRenderer = L.canvas({ padding: 0.5 });
+  const pointsLayer = L.layerGroup([], { renderer: canvasRenderer }).addTo(map);
+
+  // Estado
+  let latestData = [];
+  let es = null; // EventSource activo (si aplica)
+  const statusEl = document.getElementById('status');
+
+  let areaLayer = null;
+  const toggleArea = document.getElementById('toggle-area');
+
+  function setStatus(text) {
+    statusEl.textContent = text || '';
+  }
+
+  // Render de puntos con filtro por viewport
+  function renderPoints() {
+    pointsLayer.clearLayers();
+    const zoom = map.getZoom();
+    if (zoom < MIN_ZOOM) return;
+
+    const bounds = map.getBounds();
+    let drawn = 0;
+
+    for (const item of latestData) {
+      if (drawn >= MAX_POINTS) break;
+      const lat = Number(item.lat);
+      const lng = Number(item.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      if (!bounds.contains([lat, lng])) continue;
+
+      L.marker([lat, lng], {
+        icon: faucetIcon,
+        keyboard: false,
+        interactive: false, // sin eventos para rendimiento
+        pane: 'markerPane', // el default de markers
+      }).addTo(pointsLayer);
+
+      drawn++;
+    }
+  }
+  map.on('zoomend moveend', renderPoints);
+
+  // Cierra SSE si está abierto
+  function closeSSE() {
+    if (es) {
+      es.close();
+      es = null;
+    }
+  }
+
+  // Consulta puntual (sin SSE)
+  async function oneShotQuery(startISO, endISO) {
+    closeSSE();
+    setStatus('Consultando…');
+    const url = `/query?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      setStatus('Error en consulta');
+      return;
+    }
+    const data = await res.json();
+    latestData = Array.isArray(data) ? data : [];
+    setStatus(`Mostrando ${latestData.length} puntos (consulta)`);
+    renderPoints();
+  }
+
+  async function loadAreaDrenajeLayer() {
+    try {
+      const res = await fetch('/api/areaDrenaje');
+      if (!res.ok) {
+        console.error('Error al cargar área de drenaje', res.status);
+        return;
       }
+      const geojson = await res.json();
+
+      // Si ya existía, la quitamos antes de crearla de nuevo
+      if (areaLayer) {
+        map.removeLayer(areaLayer);
+      }
+
+      areaLayer = L.geoJSON(geojson, {
+        style: function () {
+          return {
+            color: '#005f99',   // borde
+            weight: 1.5,        // grosor del borde
+            fillOpacity: 0,     // SIN relleno, no tapa los puntos
+          };
+        },
+        interactive: false,     // que no capture clics (para que sea “de fondo”
+      }).addTo(map);
+    } catch (err) {
+      console.error('Error fetch área drenaje', err);
+    }
+  }
+
+  toggleArea.addEventListener('change', (e) => {
+    if (!areaLayer) {
+      // Si aún no está cargada y el usuario la enciende, la cargamos
+      if (e.target.checked) {
+        loadAreaDrenajeLayer();
+      }
+      return;
     }
 
-    // IMPORTANTE: ruta relativa → mismo origin que FastAPI
-    const es = new EventSource("/events");
-    es.addEventListener("connected", () => console.log("[SSE] conectado"));
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (typeof data.lat === "number" && typeof data.lng === "number") {
-          upsertMarker(data);
-        } else {
-          console.log("[SSE]", data);
-        }
-      } catch {
-        console.warn("[SSE] no JSON:", e.data);
-      }
-    };
+    if (e.target.checked) {
+      areaLayer.addTo(map);
+    } else {
+      map.removeLayer(areaLayer);
+    }
+  });
+
+  // Streaming (SSE)
+  function startSSE(startISO, endISO) {
+    closeSSE();
+    const url = `/stream?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+    es = new EventSource(url);
+    es.addEventListener('open', () => setStatus('Streaming activo…'));
+    es.addEventListener('error', () => setStatus('SSE desconectado'));
+    es.addEventListener('update', (event) => {
+      let data;
+      try { data = JSON.parse(event.data); }
+      catch { return; }
+      latestData = Array.isArray(data) ? data : [];
+      setStatus(`Streaming: ${latestData.length} puntos`);
+      renderPoints();
+    });
+    es.addEventListener('complete', () => {
+      // El backend puede cerrar si el rango no incluye hoy (seguro extra)
+      setStatus('Rango histórico (completado)');
+      closeSSE();
+    });
+  }
+
+  // Lógica: elegir SSE o consulta según rango
+  async function loadRange(startDate, endDate) {
+    const startISO = new Date(startDate).toISOString();
+    const endISO = new Date(endDate).toISOString();
+    const hoy = startOfDay(todayLocal());      // 00:00 de hoy Lima
+    const incHoy = endDate >= hoy;             // el rango incluye hoy
+
+    if (incHoy) {
+      startSSE(startISO, endISO);
+    } else {
+      await oneShotQuery(startISO, endISO);
+    }
+  }
+
+  // UI fechas
+  const inputStart = document.getElementById('d-start');
+  const inputEnd = document.getElementById('d-end');
+  const btnApply = document.getElementById('apply');
+
+  // Por defecto: AYER 00:00 → HOY ahora
+  const hoy = todayLocal();
+  const ayer = new Date(hoy.getTime() - 24*60*60*1000);
+  inputStart.value = yyyymmdd(ayer);
+  inputEnd.value = yyyymmdd(hoy);
+
+  btnApply.addEventListener('click', () => {
+    const s = inputStart.valueAsDate || ayer;
+    const e = inputEnd.valueAsDate || hoy;
+    const start = startOfDay(s);
+    // Para “incluye hoy”, usamos fin del día si la fecha es hoy; si no, fin del día elegido
+    const eIsToday = yyyymmdd(e) === yyyymmdd(hoy);
+    const end = eIsToday ? new Date(hoy) : endOfDay(e);
+    loadRange(start, end);
+  });
+
+  // Carga inicial
+  (function initLoad() {
+    const start = startOfDay(ayer);
+    const end = new Date(hoy); // ahora → para incluir hoy y activar SSE
+    loadRange(start, end);
+    if (toggleArea.checked) {
+      loadAreaDrenajeLayer();
+    }
+  })();
+
   </script>
 </body>
 </html>
