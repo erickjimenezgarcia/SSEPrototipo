@@ -47,56 +47,66 @@ def to_iso(dt: datetime) -> str:
     return dt.astimezone(TZ).isoformat()
 
 def consultar_oracle_rango(dt_start: datetime, dt_end: datetime) -> list[dict]:
-    # Normaliza a Lima y quita tzinfo para Oracle DATE si lo prefieres
-    s = dt_start.astimezone(TZ).replace(tzinfo=None)
-    e = dt_end.astimezone(TZ).replace(tzinfo=None)
+    # Como ORIENTAFECINC es VARCHAR2 'YYYY-MM-DD' (sin hora),
+    # comparamos por fecha (date) para evitar ORA-01861.
+    s = dt_start.astimezone(TZ).date()
+    e = dt_end.astimezone(TZ).date()
 
     conn = cx_Oracle.connect(user=ORACLE_USER, password=ORACLE_PASS, dsn=ORACLE_DSN)
     cur = conn.cursor()
 
-    # Asegura zona horaria de la sesión (opcional pero recomendable)
     try:
-        cur.execute("ALTER SESSION SET time_zone = '-05:00'")
-    except Exception:
-        pass
+        # (opcional) zona horaria sesión
+        try:
+            cur.execute("ALTER SESSION SET time_zone = '-05:00'")
+        except Exception:
+            pass
 
-    sql = """
-        SELECT id_numero_servicios, fecha, departamento, provincia, distrito,
-               tipologia, lat, lng
-        FROM concateck_datos
-        WHERE fecha >= :p_start AND fecha <= :p_end
-        ORDER BY id_numero_servicios ASC
-    """
+        sql = """
+            SELECT ORIENTAID, ORIENTAFECINC, DEPARTAMENTONOMBRE, PROVINCIANOMBRE, DISTRITONOMBRE,
+                   TIPOLOGIA, ORIENTALAT, ORIENTALON
+            FROM PRUEBA_CAMI_FILTRO_V2
+            WHERE TO_DATE(ORIENTAFECINC, 'YYYY-MM-DD') BETWEEN :p_start AND :p_end
+            ORDER BY ORIENTAID ASC
+        """
 
-    # OJO: usa los nombres nuevos p_start/p_end
-    cur.execute(sql, p_start=s, p_end=e)
+        cur.execute(sql, {"p_start": s, "p_end": e})
 
-    cols = [c[0].lower() for c in cur.description]
-    out = []
-    for row in cur:
-        rec = dict(zip(cols, row))
-        out.append({
-            "id": rec.get("id_numero_servicios"),
-            "fecha": rec.get("fecha").astimezone(TZ).isoformat()
-                     if isinstance(rec.get("fecha"), datetime) and rec["fecha"].tzinfo
-                     else (rec.get("fecha").replace(tzinfo=TZ).isoformat()
-                           if isinstance(rec.get("fecha"), datetime) else None),
-            "departamento": rec.get("departamento"),
-            "provincia": rec.get("provincia"),
-            "distrito": rec.get("distrito"),
-            "tipologia": rec.get("tipologia"),
-            "lat": float(rec["lat"]) if rec.get("lat") is not None else None,
-            "lng": float(rec["lng"]) if rec.get("lng") is not None else None,
-        })
-    cur.close()
-    conn.close()
-    return out
+        cols = [c[0].lower() for c in cur.description]
+        out = []
 
-# Función para iniciar el ETL en segundo plano
-@app.on_event("startup")
-async def start_etl():
-    """Inicia el proceso ETL en segundo plano al arrancar la aplicación"""
-    asyncio.create_task(etl.loop_etl(intervalo_segundos=300))  # 5 minutos
+        for row in cur:
+            rec = dict(zip(cols, row))
+
+            # ORIENTAFECINC viene como string 'YYYY-MM-DD'
+            f = rec.get("orientafecinc")
+            fecha_iso = f"{f}T00:00:00-05:00" if isinstance(f, str) and f else None
+
+            out.append({
+                "id": rec.get("orientaid"),
+                "fecha": fecha_iso,
+                "departamento": rec.get("departamentonombre"),
+                "provincia": rec.get("provincianombre"),
+                "distrito": rec.get("distritonombre"),
+                "tipologia": rec.get("tipologia"),
+                "lat": float(rec["orientalat"]) if rec.get("orientalat") is not None else None,
+                "lng": float(rec["orientalon"]) if rec.get("orientalon") is not None else None,
+            })
+
+        return out
+
+    finally:
+        try:
+            cur.close()
+        finally:
+            conn.close()
+            
+            
+# # Función para iniciar el ETL en segundo plano
+# @app.on_event("startup")
+# async def start_etl():
+#     """Inicia el proceso ETL en segundo plano al arrancar la aplicación"""
+#     asyncio.create_task(etl.loop_etl(intervalo_segundos=300))  # 5 minutos
 
 
 def serialize_item(item):
@@ -190,8 +200,8 @@ async def stream(start: str = Query(...), end: str = Query(...)):
                 yield {"event": "complete", "data": "done"}
                 break
 
-            # Ritmo de sondeo: 2s la primera, luego 60s
-            await asyncio.sleep(2 if first_sleep else 60)
+            # Ritmo de sondeo: 2s la primera, luego 15min
+            await asyncio.sleep(2 if first_sleep else 900)
             first_sleep = False
 
     return EventSourceResponse(
