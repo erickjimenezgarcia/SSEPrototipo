@@ -11,7 +11,7 @@ from etl import ETLIncremental
 import oracledb as cx_Oracle
 from pathlib import Path
 from dotenv import load_dotenv
-from test_arcgis import area_drenaje_geojson
+from test_arcgis import area_drenaje_geojson,area_sectores_geojson
 
 load_dotenv()
 
@@ -233,4 +233,16 @@ def apiAreasDrenaje():
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/api/areaSectores")
+def apiSectoresOperacionales():
+    try:
+        data = area_sectores_geojson()
+        return JSONResponse(content=data)
+    except ValueError as e:
+        print(str(e))
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(str(e))
         raise HTTPException(status_code=500, detail=str(e))

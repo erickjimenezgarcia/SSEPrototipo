@@ -42,6 +42,21 @@
     .corner-left  { left: 12px; }
     .corner-right { right: 12px; }
 
+    .sector-label {
+      background: transparent;
+      border: none;
+    }
+
+    .sector-label > div {
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 600;
+      color: #005f99;
+      text-shadow: 0 0 2px rgba(255,255,255,0.95), 0 0 6px rgba(255,255,255,0.95);
+      pointer-events: none;
+    }
+
     @media (max-width: 600px) {
       .corner-left img {
       width: 60px;       
@@ -51,6 +66,8 @@
         width: 40px; 
       }
     }
+
+    
   </style>
 </head>
 <body>
@@ -63,7 +80,7 @@
 
     <label style="margin-left:8px;">
       <input type="checkbox" id="toggle-area" checked>
-      Área de drenaje
+      Área de sectores
     </label>
 
     <span id="status"></span>
@@ -137,6 +154,7 @@
   const statusEl = document.getElementById('status');
 
   let areaLayer = null;
+  let areaLabelsLayer;
   const toggleArea = document.getElementById('toggle-area');
 
   function setStatus(text) {
@@ -224,11 +242,97 @@
     }
   }
 
+const MIN_ZOOM_LABELS = 13;
+
+function updateSectorLabelsVisibility() {
+  if (!areaLabelsLayer) return;
+
+  const z = map.getZoom();
+  if (z >= MIN_ZOOM_LABELS) {
+    if (!map.hasLayer(areaLabelsLayer)) map.addLayer(areaLabelsLayer);
+  } else {
+    if (map.hasLayer(areaLabelsLayer)) map.removeLayer(areaLabelsLayer);
+  }
+}
+
+
+async function loadAreaSectoresLayer() {
+  try {
+    const res = await fetch('/api/areaSectores');
+    if (!res.ok) {
+      console.error('Error al cargar área sectores', res.status);
+      return;
+    }
+
+    const geojson = await res.json();
+    console.log("geojson.type:", geojson?.type);
+    console.log("features:", geojson?.features?.length);
+
+    const f0 = geojson?.features?.[0];
+    console.log("feature[0] keys:", f0 ? Object.keys(f0) : null);
+    console.log("feature[0].properties keys:", f0?.properties ? Object.keys(f0.properties) : null);
+    console.log("feature[0].properties sample:", f0?.properties);
+    console.log("feature[0].geometry type:", f0?.geometry?.type);
+
+    // limpiar capas previas
+    if (areaLayer) map.removeLayer(areaLayer);
+    if (areaLabelsLayer) map.removeLayer(areaLabelsLayer);
+
+    areaLabelsLayer = L.layerGroup(); // ojo: NO la agregues todavía
+
+    areaLayer = L.geoJSON(geojson, {
+      style: () => ({
+        color: '#005f99',
+        weight: 1.5,
+        fillOpacity: 0,
+      }),
+      interactive: false,
+
+      onEachFeature: (feature, layer) => {
+        const nombre = feature?.properties?.sector;
+        if (!nombre) return;
+
+        // Si no hay geometría, no intentes centrar
+        if (!feature?.geometry) return;
+
+        // Bounds seguros
+        const bounds = layer.getBounds?.();
+        if (!bounds || !bounds.isValid || !bounds.isValid()) return;
+
+        const center = bounds.getCenter();
+
+        L.marker(center, {
+          interactive: false,
+          icon: L.divIcon({
+            className: "sector-label",
+            html: `<div>${nombre}</div>`,
+            iconSize: null,
+          }),
+        }).addTo(areaLabelsLayer);
+      }
+
+    }).addTo(map);
+
+    // 1) aplica visibilidad inicial
+    updateSectorLabelsVisibility();
+
+    // 2) engancha el listener (solo una vez)
+    if (!map._labelsZoomHandlerAdded) {
+      map.on('zoomend', updateSectorLabelsVisibility);
+      map._labelsZoomHandlerAdded = true;
+    }
+
+  } catch (err) {
+    console.error('Error fetch área sectores', err);
+  }
+}
+
+
   toggleArea.addEventListener('change', (e) => {
     if (!areaLayer) {
       // Si aún no está cargada y el usuario la enciende, la cargamos
       if (e.target.checked) {
-        loadAreaDrenajeLayer();
+        loadAreaSectoresLayer();
       }
       return;
     }
@@ -303,7 +407,7 @@
     const end = new Date(hoy); // ahora → para incluir hoy y activar SSE
     loadRange(start, end);
     if (toggleArea.checked) {
-      loadAreaDrenajeLayer();
+      loadAreaSectoresLayer();
     }
   })();
 
