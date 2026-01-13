@@ -57,6 +57,9 @@
       pointer-events: none;
     }
 
+    .faucet-new { filter: hue-rotate(95deg) saturate(2.4) brightness(1.05); }
+    .faucet-old { filter: none; }
+
     @media (max-width: 600px) {
       .corner-left img {
       width: 60px;       
@@ -114,12 +117,28 @@
   const POINT_RADIUS = 3;
   const MAX_POINTS = 20000;
 
-  const faucetIcon = L.icon({
-    iconUrl: '/assets/img/icons/faucet.svg', // <-- tu ruta
-    iconSize: [18, 18],        // tamaño del ícono (ajústalo)
-    iconAnchor: [9, 9],        // centro del ícono
-    popupAnchor: [0, -10],     // si luego quieres popups
-    className: 'faucet-icon',  // para CSS opcional
+  function parseDateInputLocal(value) {
+  // value = "YYYY-MM-DD"
+  if (!value) return null;
+  const [y, m, d] = value.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d); // esto es LOCAL, sin UTC raro
+}
+
+  const faucetIconOld = L.icon({
+    iconUrl: '/assets/img/icons/faucet.svg',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+    popupAnchor: [0, -10],
+    className: 'faucet-icon faucet-old',
+  });
+
+  const faucetIconNew = L.icon({
+    iconUrl: '/assets/img/icons/faucet.svg',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+    popupAnchor: [0, -10],
+    className: 'faucet-icon faucet-new',
   });
 
   // Util: fechas (America/Lima, sin librerías)
@@ -150,8 +169,14 @@
 
   // Estado
   let latestData = [];
+  const NEW_TTL_MS = 15 * 60 * 1000;
+  const firstSeenById = new Map();     // id -> timestamp
+  let baselineLoaded = false; 
   let es = null; // EventSource activo (si aplica)
   const statusEl = document.getElementById('status');
+
+  let totalNewSinceLoad = 0;
+  const newIdsSinceLoad = new Set();
 
   let areaLayer = null;
   let areaLabelsLayer;
@@ -160,6 +185,12 @@
   function setStatus(text) {
     statusEl.textContent = text || '';
   }
+
+  function resetNewTracking() {
+    baselineLoaded = false;
+    firstSeenById.clear();
+  }
+
 
   // Render de puntos con filtro por viewport
   function renderPoints() {
@@ -170,6 +201,7 @@
     const bounds = map.getBounds();
     let drawn = 0;
 
+    const nowMs = Date.now();
     for (const item of latestData) {
       if (drawn >= MAX_POINTS) break;
       const lat = Number(item.lat);
@@ -177,11 +209,17 @@
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
       if (!bounds.contains([lat, lng])) continue;
 
+      const id = item?.id;
+
+      const firstSeen = (id != null) ? firstSeenById.get(id) : null;
+      const isToday = isTodayInLima(item?.fecha);
+      const isNew = isToday && (firstSeen != null) && ((nowMs - firstSeen) < NEW_TTL_MS);
+
       L.marker([lat, lng], {
-        icon: faucetIcon,
+        icon: isNew ? faucetIconNew : faucetIconOld,
         keyboard: false,
-        interactive: false, // sin eventos para rendimiento
-        pane: 'markerPane', // el default de markers
+        interactive: false,
+        pane: 'markerPane',
       }).addTo(pointsLayer);
 
       drawn++;
@@ -209,7 +247,7 @@
     }
     const data = await res.json();
     latestData = Array.isArray(data) ? data : [];
-    setStatus(`Mostrando ${latestData.length} puntos (consulta)`);
+    setStatus(`Mostrando ${latestData.length} puntos`);
     renderPoints();
   }
 
@@ -243,16 +281,58 @@
   }
 
 const MIN_ZOOM_LABELS = 13;
+const FULL_LABELS_ZOOM = 15;   // desde aquí mostramos TODOS
+const MIN_PIXEL_DIST = 80;
 
 function updateSectorLabelsVisibility() {
   if (!areaLabelsLayer) return;
 
   const z = map.getZoom();
-  if (z >= MIN_ZOOM_LABELS) {
-    if (!map.hasLayer(areaLabelsLayer)) map.addLayer(areaLabelsLayer);
-  } else {
+
+  // 1) debajo del mínimo: no mostrar
+  if (z < MIN_ZOOM_LABELS) {
     if (map.hasLayer(areaLabelsLayer)) map.removeLayer(areaLabelsLayer);
+    return;
   }
+
+  // 2) asegurar que esté agregada para poder filtrar
+  if (!map.hasLayer(areaLabelsLayer)) map.addLayer(areaLabelsLayer);
+
+  // 3) si ya estás en zoom alto: mostrar todo
+  if (z >= FULL_LABELS_ZOOM) {
+    areaLabelsLayer.eachLayer((m) => {
+      if (m.getElement) {
+        const el = m.getElement();
+        if (el) el.style.display = '';
+      }
+    });
+    return;
+  }
+
+  // 4) zoom intermedio: mostrar solo algunos (sin solaparse)
+  const shown = []; // puntos ya mostrados en px
+
+  areaLabelsLayer.eachLayer((m) => {
+    const ll = m.getLatLng?.();
+    const el = m.getElement?.();
+    if (!ll || !el) return;
+
+    const pt = map.latLngToContainerPoint(ll);
+
+    // si está muy cerca de uno ya mostrado -> ocultar
+    let ok = true;
+    for (const s of shown) {
+      const dx = pt.x - s.x;
+      const dy = pt.y - s.y;
+      if ((dx*dx + dy*dy) < (MIN_PIXEL_DIST * MIN_PIXEL_DIST)) {
+        ok = false;
+        break;
+      }
+    }
+
+    el.style.display = ok ? '' : 'none';
+    if (ok) shown.push(pt);
+  });
 }
 
 
@@ -344,19 +424,79 @@ async function loadAreaSectoresLayer() {
     }
   });
 
+  function isTodayInLima(fechaIso) {
+    if (!fechaIso) return false;
+
+    const d = new Date(fechaIso);           // respeta el -05:00 si viene en ISO
+    const hoy = todayLocal();               // ya está “en Lima”
+    return yyyymmdd(d) === yyyymmdd(hoy);   // compara solo YYYY-MM-DD
+  }
+
   // Streaming (SSE)
   function startSSE(startISO, endISO) {
     closeSSE();
+    resetNewTracking();
     const url = `/stream?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
     es = new EventSource(url);
     es.addEventListener('open', () => setStatus('Streaming activo…'));
     es.addEventListener('error', () => setStatus('SSE desconectado'));
     es.addEventListener('update', (event) => {
       let data;
-      try { data = JSON.parse(event.data); }
-      catch { return; }
-      latestData = Array.isArray(data) ? data : [];
-      setStatus(`Streaming: ${latestData.length} puntos`);
+      try { data = JSON.parse(event.data); } catch { return; }
+
+      const arr = Array.isArray(data) ? data : [];
+      const now = Date.now();
+
+      const idsInThisUpdate = new Set();
+      let newCount = 0;
+
+      // 1) Baseline: primera vez => todo ROJO (no cuenta como "nuevo")
+      if (!baselineLoaded) {
+        for (const it of arr) {
+          const id = it?.id;
+          if (id == null) continue;
+          idsInThisUpdate.add(id);
+
+          // lo marcamos como visto "hace más de 15 min" para que salga rojo
+          firstSeenById.set(id, now - NEW_TTL_MS - 1000);
+        }
+        baselineLoaded = true;
+        newCount = 0;
+      } else {
+        // 2) Luego: lo que aparezca por primera vez => VERDE por 15 min
+        // ✅ y además sumar acumulado SOLO si es de HOY
+        for (const it of arr) {
+          const id = it?.id;
+          if (id == null) continue;
+          idsInThisUpdate.add(id);
+
+          const isToday = isTodayInLima(it?.fecha);
+          if (!isToday) continue;
+
+          if (!firstSeenById.has(id)) {
+            firstSeenById.set(id, now); // empieza a contar 15 min
+            newCount++;
+
+            // ✅ acumulado desde que entró (no se repite)
+            if (!newIdsSinceLoad.has(id)) {
+              newIdsSinceLoad.add(id);
+              totalNewSinceLoad++;
+            }
+          }
+        }
+      }
+
+      // 3) Limpieza: evita que el Map crezca infinito
+      // (si un id deja de venir, lo borramos)
+      for (const id of firstSeenById.keys()) {
+        if (!idsInThisUpdate.has(id)) firstSeenById.delete(id);
+      }
+
+      latestData = arr;
+
+      const hora = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+      setStatus(`Streaming: ${latestData.length} | Nuevos: ${totalNewSinceLoad} (+${newCount})`);
+
       renderPoints();
     });
     es.addEventListener('complete', () => {
@@ -388,22 +528,24 @@ async function loadAreaSectoresLayer() {
   // Por defecto: AYER 00:00 → HOY ahora
   const hoy = todayLocal();
   const ayer = new Date(hoy.getTime() - 24*60*60*1000);
-  inputStart.value = yyyymmdd(ayer);
+  inputStart.value = yyyymmdd(hoy);
   inputEnd.value = yyyymmdd(hoy);
 
   btnApply.addEventListener('click', () => {
-    const s = inputStart.valueAsDate || ayer;
-    const e = inputEnd.valueAsDate || hoy;
+    const s = parseDateInputLocal(inputStart.value) || hoy;
+    const e = parseDateInputLocal(inputEnd.value) || hoy;
+
     const start = startOfDay(s);
-    // Para “incluye hoy”, usamos fin del día si la fecha es hoy; si no, fin del día elegido
+
     const eIsToday = yyyymmdd(e) === yyyymmdd(hoy);
     const end = eIsToday ? new Date(hoy) : endOfDay(e);
+
     loadRange(start, end);
   });
 
   // Carga inicial
   (function initLoad() {
-    const start = startOfDay(ayer);
+    const start = startOfDay(hoy);
     const end = new Date(hoy); // ahora → para incluir hoy y activar SSE
     loadRange(start, end);
     if (toggleArea.checked) {

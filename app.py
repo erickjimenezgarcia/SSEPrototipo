@@ -241,8 +241,6 @@ def apiSectoresOperacionales():
         data = area_sectores_geojson()
         return JSONResponse(content=data)
     except ValueError as e:
-        print(str(e))
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(str(e))
         raise HTTPException(status_code=500, detail=str(e))
