@@ -16,6 +16,37 @@
     }
     .toolbar input { padding: 4px 6px }
     .toolbar button { padding: 6px 10px; border-radius: 8px; border: 0; cursor: pointer }
+    .help-btn {
+      position: absolute;
+      left: calc(100% + 10px);
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px; height: 24px; border-radius: 50%;
+      background: #005f99; color: #fff; border: 0;
+      cursor: pointer; font-weight: bold; font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .help-btn:hover { background: #004477; }
+    .help-popup {
+      display: none; position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #fff;
+      padding: 20px; border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.25);
+      max-width: 400px; font: 13px system-ui, sans-serif;
+      line-height: 1.5; z-index: 2000;
+    }
+    .help-popup.show { display: block; }
+    .help-popup h3 {
+      margin-top: 0; color: #005f99;
+    }
+    .help-popup-close {
+      position: absolute; top: 8px; right: 10px;
+      background: none; border: 0; font-size: 20px;
+      cursor: pointer; color: #666; line-height: 1;
+    }
+    .help-popup-close:hover { color: #000; }
     .zoom-hint { background:#fff;padding:6px 8px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.2);font:12px/1.2 sans-serif; }
     .corner {
       position: absolute;
@@ -87,6 +118,14 @@
     </label>
 
     <span id="status"></span>
+    
+    <button class="help-btn" id="help-btn" title="Ayuda">?</button>
+  </div>
+
+  <div class="help-popup" id="help-popup">
+    <button class="help-popup-close" id="help-close">×</button>
+    <h3>¿Qué significa esto?</h3>
+    <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
   </div>
 
   <div class="corner corner-left">
@@ -273,7 +312,7 @@
             fillOpacity: 0,     // SIN relleno, no tapa los puntos
           };
         },
-        interactive: false,     // que no capture clics (para que sea “de fondo”
+        interactive: false,     // que no capture clics (para que sea "de fondo"
       }).addTo(map);
     } catch (err) {
       console.error('Error fetch área drenaje', err);
@@ -428,7 +467,7 @@ async function loadAreaSectoresLayer() {
     if (!fechaIso) return false;
 
     const d = new Date(fechaIso);           // respeta el -05:00 si viene en ISO
-    const hoy = todayLocal();               // ya está “en Lima”
+    const hoy = todayLocal();               // ya está "en Lima"
     return yyyymmdd(d) === yyyymmdd(hoy);   // compara solo YYYY-MM-DD
   }
 
@@ -552,6 +591,26 @@ async function loadAreaSectoresLayer() {
       loadAreaSectoresLayer();
     }
   })();
+
+  // Popup de ayuda
+  const helpBtn = document.getElementById('help-btn');
+  const helpPopup = document.getElementById('help-popup');
+  const helpClose = document.getElementById('help-close');
+
+  helpBtn.addEventListener('click', () => {
+    helpPopup.classList.toggle('show');
+  });
+
+  helpClose.addEventListener('click', () => {
+    helpPopup.classList.remove('show');
+  });
+
+  // Cerrar el popup si se hace click fuera de él
+  document.addEventListener('click', (e) => {
+    if (!helpPopup.contains(e.target) && e.target !== helpBtn) {
+      helpPopup.classList.remove('show');
+    }
+  });
 
   </script>
 </body>
