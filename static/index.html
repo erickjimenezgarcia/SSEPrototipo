@@ -91,6 +91,26 @@
     .faucet-new { filter: hue-rotate(95deg) saturate(2.4) brightness(1.05); }
     .faucet-old { filter: none; }
 
+    .corner-top-right {
+      position: absolute;
+      z-index: 1100;
+      top: 12px;
+      right: 60px;
+      pointer-events: auto; /* ✅ permitir click */
+    }
+
+    .corner-top-right a {
+      display: inline-block;
+    }
+
+    .corner-top-right img {
+      width: 120px;         /* ajusta a gusto */
+      height: auto;
+      display: block;
+      filter: drop-shadow(0 2px 6px rgba(0,0,0,.35));
+      cursor: pointer;
+    }
+
     @media (max-width: 600px) {
       .corner-left img {
       width: 60px;       
@@ -99,6 +119,10 @@
       .corner-right img {
         width: 40px; 
       }
+
+      .corner-top-right img {
+      width: 80px;
+    }
     }
 
     
@@ -120,6 +144,17 @@
     <span id="status"></span>
     
     <button class="help-btn" id="help-btn" title="Ayuda">?</button>
+  </div>
+
+  <div class="corner-top-right">
+    <a
+      href="https://geosunass.sunass.gob.pe/gisportal/apps/dashboards/955453e5430f4224b8ecc74e2e614e5e"
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Yakunectados"
+    >
+      <img src="/assets/img/ui/YakunectadoLogo.png" alt="Yakunectado">
+    </a>
   </div>
 
   <div class="help-popup" id="help-popup">
