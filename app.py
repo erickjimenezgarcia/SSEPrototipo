@@ -12,6 +12,8 @@ import oracledb as cx_Oracle
 from pathlib import Path
 from dotenv import load_dotenv
 from test_arcgis import area_drenaje_geojson,area_sectores_geojson
+import sys
+import time
 
 load_dotenv()
 
@@ -47,16 +49,37 @@ def to_iso(dt: datetime) -> str:
     return dt.astimezone(TZ).isoformat()
 
 def consultar_oracle_rango(dt_start: datetime, dt_end: datetime) -> list[dict]:
-    # Como ORIENTAFECINC es VARCHAR2 'YYYY-MM-DD' (sin hora),
-    # comparamos por fecha (date) para evitar ORA-01861.
     s = dt_start.astimezone(TZ).date()
     e = dt_end.astimezone(TZ).date()
+    
+    MAX_REINTENTOS = 3
+    RETRY_DELAY = 3 
 
-    conn = cx_Oracle.connect(user=ORACLE_USER, password=ORACLE_PASS, dsn=ORACLE_DSN)
+    conn = None
+
+    # 🔁 Intentos de conexión
+    for intento in range(1, MAX_REINTENTOS + 1):
+        try:
+            conn = cx_Oracle.connect(
+                user=ORACLE_USER,
+                password=ORACLE_PASS,
+                dsn=ORACLE_DSN
+            )
+            print(f"✅ Conexión exitosa en intento {intento}")
+            break
+
+        except cx_Oracle.Error as err:
+            print(f"❌ Error conexión Oracle (intento {intento}/{MAX_REINTENTOS}): {err}")
+
+            if intento == MAX_REINTENTOS:
+                print("🚨 No se pudo conectar después de 3 intentos. Cerrando proceso.")
+                sys.exit(1)
+
+            time.sleep(RETRY_DELAY)
+
     cur = conn.cursor()
 
     try:
-        # (opcional) zona horaria sesión
         try:
             cur.execute("ALTER SESSION SET time_zone = '-05:00'")
         except Exception:
@@ -78,7 +101,6 @@ def consultar_oracle_rango(dt_start: datetime, dt_end: datetime) -> list[dict]:
         for row in cur:
             rec = dict(zip(cols, row))
 
-            # ORIENTAFECINC viene como string 'YYYY-MM-DD'
             f = rec.get("orientafecinc")
             fecha_iso = f"{f}T00:00:00-05:00" if isinstance(f, str) and f else None
 
@@ -99,8 +121,7 @@ def consultar_oracle_rango(dt_start: datetime, dt_end: datetime) -> list[dict]:
         try:
             cur.close()
         finally:
-            conn.close()
-            
+            conn.close()         
             
 # # Función para iniciar el ETL en segundo plano
 # @app.on_event("startup")
